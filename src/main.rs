@@ -4,6 +4,7 @@ use bevy::prelude::*;
 // use haalka::HaalkaPlugin;
 
 pub mod card;
+pub mod visual_actions;
 
 fn main() -> AppExit {
     App::new()
@@ -13,7 +14,7 @@ fn main() -> AppExit {
             // WorldInspectorPlugin::new(),
             // HaalkaPlugin,
         ))
-        .add_plugins(card::plugin)
+        .add_plugins((visual_actions::plugin, card::plugin))
         .add_systems(Startup, spawn_camera)
         .run()
 }
