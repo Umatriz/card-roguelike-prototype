@@ -1608,6 +1608,7 @@ name = "card-roguelike-prototype"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "tiny_bail",
 ]
 
 [[package]]
@@ -4189,6 +4190,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiny_bail"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5646ef059c58c54e4cd099a422cc792efd9dc27ebfcfab47d968b1290452c559"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "tinyvec"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4256,6 +4266,7 @@ version = "0.1.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "784e0ac535deb450455cbfa28a6f0df145ea1bb7ae51b821cf5e7927fdcfbdd0"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
