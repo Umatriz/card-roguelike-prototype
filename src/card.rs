@@ -1,32 +1,58 @@
-use bevy::prelude::*;
+use bevy::{ecs::relationship::RelatedSpawner, prelude::*};
 use tiny_bail::prelude::*;
+
+use crate::visual_actions;
 // use haalka::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_systems(Startup, spawn_card);
+
+    app.add_observer(stacked_children_handling);
 }
 
 fn spawn_card(mut commands: Commands) {
-    commands
-        .spawn(card())
-        .observe(card_dragging_start)
-        .observe(card_dragging)
-        .observe(card_dragging_end);
-
     commands
         .spawn((
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(30.0),
                 bottom: Val::Px(0.0),
+                padding: UiRect::new(Val::Percent(20.0), Val::Percent(20.0), Val::ZERO, Val::ZERO),
                 position_type: PositionType::Absolute,
                 align_content: AlignContent::Center,
-                justify_content: JustifyContent::Center,
+                justify_content: JustifyContent::SpaceBetween,
                 ..default()
             },
             Pickable::IGNORE,
         ))
         .with_children(|parent| {
+            parent
+                .spawn((
+                    cards_stack(),
+                    StackedCards::spawn(SpawnWith(|parent: &mut RelatedSpawner<StackedIn>| {
+                        parent
+                            .spawn(card())
+                            .observe(card_dragging_start)
+                            .observe(card_dragging)
+                            .observe(card_dragging_end);
+                        parent
+                            .spawn(card())
+                            .observe(card_dragging_start)
+                            .observe(card_dragging)
+                            .observe(card_dragging_end);
+                        parent
+                            .spawn(card())
+                            .observe(card_dragging_start)
+                            .observe(card_dragging)
+                            .observe(card_dragging_end);
+                        parent
+                            .spawn(card())
+                            .observe(card_dragging_start)
+                            .observe(card_dragging)
+                            .observe(card_dragging_end);
+                    })),
+                ))
+                .observe(stack_capture_card);
             parent.spawn(cards_stack()).observe(stack_capture_card);
         });
 }
@@ -79,10 +105,17 @@ fn card_dragging(on_drag: On<Pointer<Drag>>, mut transforms: Query<&mut UiTransf
 
 fn card_dragging_end(
     on_drag_end: On<Pointer<DragEnd>>,
-    mut query: Query<(&mut UiTransform, &mut Pickable, &mut GlobalZIndex)>,
+    mut commands: Commands,
+    mut query: Query<(&mut Pickable, &mut GlobalZIndex)>,
 ) {
-    let (mut transform, mut pickable, mut z_index) = r!(query.get_mut(on_drag_end.entity()));
-    transform.translation = Val2::ZERO;
+    let (mut pickable, mut z_index) = r!(query.get_mut(on_drag_end.entity()));
+    commands
+        .entity(on_drag_end.entity())
+        .queue(visual_actions::Move::new(
+            Vec2::ZERO,
+            EaseFunction::QuinticOut,
+            0.5,
+        ));
     pickable.should_block_lower = true;
     z_index.0 = 0;
 }
@@ -100,11 +133,30 @@ pub struct StackedIn(Entity);
 #[relationship_target(relationship = StackedIn, linked_spawn)]
 pub struct StackedCards(Vec<Entity>);
 
-fn stacked_children_handling(on_stacked: On<Insert, StackedIn>, mut commands: Commands) {}
+fn stacked_children_handling(
+    on_stacked: On<Insert, StackedIn>,
+    stacked_query: Query<&StackedIn>,
+    mut transforms: Query<(&UiGlobalTransform, &mut UiTransform)>,
+    mut commands: Commands,
+) {
+    let card_entity = on_stacked.entity();
+    let stack = r!(stacked_query.get(card_entity));
+    commands.entity(stack.0).add_child(card_entity);
+
+    let [
+        (stack_global_transform, _stack_transform),
+        (card_global_transform, mut card_transform),
+    ] = r!(transforms.get_many_mut([stack.0, card_entity]));
+
+    // Get the vector pointing from the stack to the card
+    let delta = card_global_transform.translation - stack_global_transform.translation;
+    let delta = Val2::px(delta.x, delta.y);
+    card_transform.translation = delta;
+}
 
 fn cards_stack() -> impl Bundle {
     (
-        CardsStack { max: 5 },
+        CardsStack { max: 3 },
         Node {
             width: Val::Px(WIDTH),
             height: Val::Px(HEIGHT),
