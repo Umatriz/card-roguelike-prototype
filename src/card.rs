@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use bevy::{ecs::relationship::RelatedSpawner, prelude::*};
 use tiny_bail::prelude::*;
 
@@ -30,26 +32,13 @@ fn spawn_card(mut commands: Commands) {
                 .spawn((
                     cards_stack(),
                     StackedCards::spawn(SpawnWith(|parent: &mut RelatedSpawner<StackedIn>| {
-                        parent
-                            .spawn(card())
-                            .observe(card_dragging_start)
-                            .observe(card_dragging)
-                            .observe(card_dragging_end);
-                        parent
-                            .spawn(card())
-                            .observe(card_dragging_start)
-                            .observe(card_dragging)
-                            .observe(card_dragging_end);
-                        parent
-                            .spawn(card())
-                            .observe(card_dragging_start)
-                            .observe(card_dragging)
-                            .observe(card_dragging_end);
-                        parent
-                            .spawn(card())
-                            .observe(card_dragging_start)
-                            .observe(card_dragging)
-                            .observe(card_dragging_end);
+                        for c in 'a'..='e' {
+                            parent
+                                .spawn(card(c))
+                                .observe(card_dragging_start)
+                                .observe(card_dragging)
+                                .observe(card_dragging_end);
+                        }
                     })),
                 ))
                 .observe(stack_capture_card);
@@ -72,17 +61,20 @@ pub mod colors {
 #[derive(Component, Debug)]
 pub struct Card;
 
-fn card() -> impl Bundle {
+fn card(text: impl Into<String>) -> impl Bundle {
     (
         Node {
+            position_type: PositionType::Absolute,
             width: Val::Px(WIDTH),
             height: Val::Px(HEIGHT),
             ..default()
         },
         Pickable::default(),
-        BackgroundColor(colors::MOJO),
+        BackgroundColor(colors::FINLANDIA),
+        Outline::new(Val::Percent(3.0), Val::ZERO, colors::BLACK),
         GlobalZIndex(0),
         Card,
+        children![(Text::new(text))],
     )
 }
 
@@ -106,13 +98,13 @@ fn card_dragging(on_drag: On<Pointer<Drag>>, mut transforms: Query<&mut UiTransf
 fn card_dragging_end(
     on_drag_end: On<Pointer<DragEnd>>,
     mut commands: Commands,
-    mut query: Query<(&mut Pickable, &mut GlobalZIndex)>,
+    mut query: Query<(&StackedCardOffset, &mut Pickable, &mut GlobalZIndex)>,
 ) {
-    let (mut pickable, mut z_index) = r!(query.get_mut(on_drag_end.entity()));
+    let (offset, mut pickable, mut z_index) = r!(query.get_mut(on_drag_end.entity()));
     commands
         .entity(on_drag_end.entity())
         .queue(visual_actions::Move::new(
-            Vec2::ZERO,
+            offset.0,
             EaseFunction::QuinticOut,
             0.5,
         ));
@@ -126,6 +118,9 @@ pub struct CardsStack {
 }
 
 #[derive(Component)]
+pub struct StackedCardOffset(Vec2);
+
+#[derive(Component)]
 #[relationship(relationship_target = StackedCards)]
 pub struct StackedIn(Entity);
 
@@ -133,25 +128,94 @@ pub struct StackedIn(Entity);
 #[relationship_target(relationship = StackedIn, linked_spawn)]
 pub struct StackedCards(Vec<Entity>);
 
+#[derive(Component, Default)]
+pub struct VisibleCardsQueue(VecDeque<Entity>);
+
 fn stacked_children_handling(
     on_stacked: On<Insert, StackedIn>,
     stacked_query: Query<&StackedIn>,
-    mut transforms: Query<(&UiGlobalTransform, &mut UiTransform)>,
+    stacks: Query<(&CardsStack, &Children)>,
+    mut nodes: Query<(&Node, &UiGlobalTransform, &mut UiTransform)>,
     mut commands: Commands,
 ) {
     let card_entity = on_stacked.entity();
     let stack = r!(stacked_query.get(card_entity));
-    commands.entity(stack.0).add_child(card_entity);
+    // commands.entity(stack.0).add_child(card_entity);
 
     let [
-        (stack_global_transform, _stack_transform),
-        (card_global_transform, mut card_transform),
-    ] = r!(transforms.get_many_mut([stack.0, card_entity]));
+        (stack_node, stack_global_transform, _stack_transform),
+        (card_node, card_global_transform, mut card_transform),
+    ] = r!(nodes.get_many_mut([stack.0, card_entity]));
 
-    // Get the vector pointing from the stack to the card
-    let delta = card_global_transform.translation - stack_global_transform.translation;
-    let delta = Val2::px(delta.x, delta.y);
-    card_transform.translation = delta;
+    // // get the vector pointing from the stack to the card
+    // let delta = card_global_transform.translation - stack_global_transform.translation;
+
+    let (cards_stack, children) = r!(stacks.get(stack.0));
+
+    let (Val::Px(stack_h), Val::Px(card_h)) = (stack_node.height, card_node.height) else {
+        return;
+    };
+
+    let rest = (stack_h - card_h) / (cards_stack.max - 1) as f32;
+    let max = cards_stack.max as usize;
+
+    if children.len() == max {
+        let first = r!(children.first());
+        commands.trigger_targets(MakeIdle, *first);
+    }
+
+    commands
+        .entity(stack.0)
+        .add_one_related::<ChildOf>(card_entity);
+
+    // let delta = Val2::px(delta.x, delta.y);
+    // card_transform.translation = delta;
+}
+
+pub fn make_idle(mut entity: EntityWorldMut) {
+    let mut visibility = r!(entity.get_mut::<Visibility>());
+    *visibility = Visibility::Hidden;
+
+    let mut pickable = r!(entity.get_mut::<Pickable>());
+    *pickable = Pickable::IGNORE;
+}
+
+pub fn make_active(mut entity: EntityWorldMut) {
+    let mut visibility = r!(entity.get_mut::<Visibility>());
+    *visibility = Visibility::Visible;
+
+    let mut pickable = r!(entity.get_mut::<Pickable>());
+    *pickable = Pickable {
+        // This is so it can trigger `DragEnd` event on the cards stack
+        should_block_lower: false,
+        is_hoverable: true,
+    };
+}
+
+pub fn attach_to_stack(mut entity: EntityWorldMut) {
+    let this_entity = entity.id();
+    let stack = r!(entity.get::<StackedIn>());
+    let stack = stack.0;
+
+    entity.world_scope(|world: &mut World| {
+        let mut entity = world.entity_mut(stack);
+        let cards_stack = r!(entity.get::<CardsStack>());
+        let max_cards = cards_stack.max;
+
+        let children = r!(entity.get::<Children>());
+        let first = children.first().copied();
+
+        if children.len() == max_cards as usize {
+            let first = r!(first);
+            entity.world_scope(|world: &mut World| {
+                let entity = world.entity_mut(first);
+                make_idle(entity);
+            });
+            entity.remove_child(first);
+        }
+
+        entity.add_child(this_entity);
+    });
 }
 
 fn cards_stack() -> impl Bundle {
@@ -159,7 +223,8 @@ fn cards_stack() -> impl Bundle {
         CardsStack { max: 3 },
         Node {
             width: Val::Px(WIDTH),
-            height: Val::Px(HEIGHT),
+            height: Val::Px(HEIGHT * 1.2),
+
             ..default()
         },
         BackgroundColor(colors::BLACK),
