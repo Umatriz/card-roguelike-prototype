@@ -9,7 +9,7 @@ use crate::visual_actions;
 pub fn plugin(app: &mut App) {
     app.add_systems(Startup, spawn_card);
 
-    app.add_observer(stacked_children_handling);
+    app.add_observer(stacked_handling);
 }
 
 fn spawn_card(mut commands: Commands) {
@@ -17,10 +17,10 @@ fn spawn_card(mut commands: Commands) {
         .spawn((
             Node {
                 width: Val::Percent(100.0),
-                height: Val::Percent(30.0),
-                bottom: Val::Px(0.0),
-                padding: UiRect::new(Val::Percent(20.0), Val::Percent(20.0), Val::ZERO, Val::ZERO),
+                height: Val::Percent(50.0),
                 position_type: PositionType::Absolute,
+                top: Val::Percent(10.0),
+                padding: UiRect::new(Val::Percent(20.0), Val::Percent(20.0), Val::ZERO, Val::ZERO),
                 align_content: AlignContent::Center,
                 justify_content: JustifyContent::SpaceBetween,
                 ..default()
@@ -37,12 +37,18 @@ fn spawn_card(mut commands: Commands) {
                                 .spawn(card(c))
                                 .observe(card_dragging_start)
                                 .observe(card_dragging)
-                                .observe(card_dragging_end);
+                                .observe(card_dragging_end)
+                                .observe(child_remove_handling);
                         }
                     })),
                 ))
-                .observe(stack_capture_card);
-            parent.spawn(cards_stack()).observe(stack_capture_card);
+                .observe(stack_capture_card)
+                .observe(stack_determine_z_index);
+
+            parent
+                .spawn(cards_stack())
+                .observe(stack_capture_card)
+                .observe(stack_determine_z_index);
         });
 }
 
@@ -59,7 +65,8 @@ pub mod colors {
     pub const FINLANDIA: Color = Color::srgb_u8(78, 104, 81);
 }
 
-const BASE_STACKED_CRAD_LAYER: i32 = 1;
+const BASE_STACKED_CRAD_LAYER: i32 = -1;
+const BASE_CARD_LAYER: i32 = 1;
 
 #[derive(Component, Debug)]
 pub struct Card;
@@ -75,7 +82,7 @@ fn card(text: impl Into<String>) -> impl Bundle {
         Pickable::default(),
         BackgroundColor(colors::FINLANDIA),
         Outline::new(Val::Percent(3.0), Val::ZERO, colors::BLACK),
-        GlobalZIndex(0),
+        GlobalZIndex(BASE_CARD_LAYER),
         Card,
         children![(Text::new(text))],
     )
@@ -85,13 +92,13 @@ fn card_dragging_start(
     on_drag_start: On<Pointer<DragStart>>,
     mut z_indexes: Query<(&mut Pickable, &mut GlobalZIndex), With<Card>>,
 ) {
-    let (mut pickable, mut z_index) = r!(z_indexes.get_mut(on_drag_start.entity()));
+    let (mut pickable, mut z_index) = r!(z_indexes.get_mut(on_drag_start.event().entity));
     pickable.should_block_lower = false;
     z_index.0 = 1;
 }
 
 fn card_dragging(on_drag: On<Pointer<Drag>>, mut transforms: Query<&mut UiTransform, With<Card>>) {
-    let Ok(mut transform) = transforms.get_mut(on_drag.entity()) else {
+    let Ok(mut transform) = transforms.get_mut(on_drag.event().entity) else {
         return;
     };
 
@@ -103,9 +110,9 @@ fn card_dragging_end(
     mut commands: Commands,
     mut query: Query<(&StackedCardOffset, &mut Pickable, &mut GlobalZIndex)>,
 ) {
-    let (offset, mut pickable, mut z_index) = r!(query.get_mut(on_drag_end.entity()));
+    let (offset, mut pickable, mut z_index) = r!(query.get_mut(on_drag_end.event().entity));
     commands
-        .entity(on_drag_end.entity())
+        .entity(on_drag_end.event().entity)
         .queue(visual_actions::Move::new(
             offset.0,
             EaseFunction::QuinticOut,
@@ -131,17 +138,14 @@ pub struct StackedIn(Entity);
 #[relationship_target(relationship = StackedIn, linked_spawn)]
 pub struct StackedCards(Vec<Entity>);
 
-#[derive(Component, Default)]
-pub struct VisibleCardsQueue(VecDeque<Entity>);
-
-fn stacked_children_handling(
+fn stacked_handling(
     on_stacked: On<Insert, StackedIn>,
     stacked_query: Query<&StackedIn>,
     stacks: Query<&CardsStack>,
     mut nodes: Query<(&UiGlobalTransform, &mut UiTransform)>,
     mut commands: Commands,
 ) {
-    let card_entity = on_stacked.entity();
+    let card_entity = on_stacked.event().entity;
     let stack_entity = r!(stacked_query.get(card_entity)).0;
 
     let [
@@ -160,6 +164,13 @@ fn stacked_children_handling(
         .entity(stack_entity)
         .queue(update_visible_cards)
         .queue(calculate_visible_offsets);
+}
+
+fn child_remove_handling(on_removed: On<Remove, ChildOf>, mut commands: Commands) {
+    commands
+        .entity(on_removed.event().entity)
+        .insert(GlobalZIndex(BASE_CARD_LAYER))
+        .queue(make_idle);
 }
 
 pub fn make_idle(mut entity: EntityWorldMut) {
@@ -202,7 +213,7 @@ fn calculate_visible_offsets(mut stack_entity: EntityWorldMut) {
         let offset = card_offset_n(idx, max_cards);
         stack_entity.world_scope(|world: &mut World| {
             world.entity_mut(cards_entity).insert((
-                GlobalZIndex(BASE_STACKED_CRAD_LAYER + idx as i32),
+                GlobalZIndex(BASE_STACKED_CRAD_LAYER - idx as i32),
                 StackedCardOffset(offset),
             ));
         });
@@ -231,9 +242,22 @@ fn cards_stack() -> impl Bundle {
     )
 }
 
+fn stack_determine_z_index(
+    on_spawn: On<Add, CardsStack>,
+    stacks: Query<&CardsStack>,
+    mut commands: Commands,
+) {
+    let entity = on_spawn.event().entity;
+    let stack = r!(stacks.get(entity));
+
+    commands.entity(entity).insert(GlobalZIndex(
+        BASE_STACKED_CRAD_LAYER * (stack.max as i32 + 1),
+    ));
+}
+
 pub fn stack_capture_card(on_drag_drop: On<Pointer<DragDrop>>, mut commands: Commands) {
     // TODO: Add `Card` component check
     commands
         .entity(on_drag_drop.dropped)
-        .insert(StackedIn(on_drag_drop.entity()));
+        .insert(StackedIn(on_drag_drop.event().entity));
 }

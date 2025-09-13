@@ -13,7 +13,7 @@ opt-level = 3
 
 [dependencies]
 # commit = 07ea4a2c
-bevy = { git = "https://github.com/bevyengine/bevy", branch = "main" }
+bevy = "0.17.0-rc.1"
 tiny_bail = "0.5.0"
 # bevy-inspector-egui = "0.33.1"
 # bevy_egui = "0.36.0"
