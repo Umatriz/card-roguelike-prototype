@@ -48,6 +48,7 @@ fn spawn_card(mut commands: Commands) {
 
 pub const WIDTH: f32 = 150.0;
 pub const HEIGHT: f32 = 200.0;
+pub const STACK_HEIGHT: f32 = HEIGHT * 1.2;
 
 pub mod colors {
     use bevy::color::Color;
@@ -57,6 +58,8 @@ pub mod colors {
     pub const MOJO: Color = Color::srgb_u8(184, 58, 45);
     pub const FINLANDIA: Color = Color::srgb_u8(78, 104, 81);
 }
+
+const BASE_STACKED_CRAD_LAYER: i32 = 1;
 
 #[derive(Component, Debug)]
 pub struct Card;
@@ -134,42 +137,29 @@ pub struct VisibleCardsQueue(VecDeque<Entity>);
 fn stacked_children_handling(
     on_stacked: On<Insert, StackedIn>,
     stacked_query: Query<&StackedIn>,
-    stacks: Query<(&CardsStack, &Children)>,
-    mut nodes: Query<(&Node, &UiGlobalTransform, &mut UiTransform)>,
+    stacks: Query<&CardsStack>,
+    mut nodes: Query<(&UiGlobalTransform, &mut UiTransform)>,
     mut commands: Commands,
 ) {
     let card_entity = on_stacked.entity();
-    let stack = r!(stacked_query.get(card_entity));
-    // commands.entity(stack.0).add_child(card_entity);
+    let stack_entity = r!(stacked_query.get(card_entity)).0;
 
     let [
-        (stack_node, stack_global_transform, _stack_transform),
-        (card_node, card_global_transform, mut card_transform),
-    ] = r!(nodes.get_many_mut([stack.0, card_entity]));
+        (stack_global_transform, _stack_transform),
+        (card_global_transform, mut card_transform),
+    ] = r!(nodes.get_many_mut([stack_entity, card_entity]));
+    let cards_stack = r!(stacks.get(stack_entity));
 
-    // // get the vector pointing from the stack to the card
-    // let delta = card_global_transform.translation - stack_global_transform.translation;
+    let offset = card_offset_n(0, cards_stack.max as usize);
+    // get the vector pointing from the target position to the card
+    let delta = card_global_transform.translation - (stack_global_transform.translation + offset);
 
-    let (cards_stack, children) = r!(stacks.get(stack.0));
-
-    let (Val::Px(stack_h), Val::Px(card_h)) = (stack_node.height, card_node.height) else {
-        return;
-    };
-
-    let rest = (stack_h - card_h) / (cards_stack.max - 1) as f32;
-    let max = cards_stack.max as usize;
-
-    if children.len() == max {
-        let first = r!(children.first());
-        commands.trigger_targets(MakeIdle, *first);
-    }
+    card_transform.translation = Val2::px(delta.x, delta.y);
 
     commands
-        .entity(stack.0)
-        .add_one_related::<ChildOf>(card_entity);
-
-    // let delta = Val2::px(delta.x, delta.y);
-    // card_transform.translation = delta;
+        .entity(stack_entity)
+        .queue(update_visible_cards)
+        .queue(calculate_visible_offsets);
 }
 
 pub fn make_idle(mut entity: EntityWorldMut) {
@@ -192,30 +182,38 @@ pub fn make_active(mut entity: EntityWorldMut) {
     };
 }
 
-pub fn attach_to_stack(mut entity: EntityWorldMut) {
-    let this_entity = entity.id();
-    let stack = r!(entity.get::<StackedIn>());
-    let stack = stack.0;
+fn update_visible_cards(mut stack_enitity: EntityWorldMut) {
+    let cards = r!(stack_enitity.get::<StackedCards>());
+    let stack = r!(stack_enitity.get::<CardsStack>());
 
-    entity.world_scope(|world: &mut World| {
-        let mut entity = world.entity_mut(stack);
-        let cards_stack = r!(entity.get::<CardsStack>());
-        let max_cards = cards_stack.max;
+    // Slice `stack.max` cards from the top of the stack
+    let starting_idx = cards.0.len().saturating_sub(stack.max as usize);
+    let visible_cards = &cards.0[starting_idx..].to_vec();
 
-        let children = r!(entity.get::<Children>());
-        let first = children.first().copied();
+    stack_enitity.replace_children(visible_cards);
+}
 
-        if children.len() == max_cards as usize {
-            let first = r!(first);
-            entity.world_scope(|world: &mut World| {
-                let entity = world.entity_mut(first);
-                make_idle(entity);
-            });
-            entity.remove_child(first);
-        }
+fn calculate_visible_offsets(mut stack_entity: EntityWorldMut) {
+    let (children, stack) = r!(stack_entity.get_components::<(&Children, &CardsStack)>());
+    let visible_cards = children.to_vec();
+    let max_cards = stack.max as usize;
 
-        entity.add_child(this_entity);
-    });
+    for (idx, cards_entity) in visible_cards.into_iter().enumerate() {
+        let offset = card_offset_n(idx, max_cards);
+        stack_entity.world_scope(|world: &mut World| {
+            world.entity_mut(cards_entity).insert((
+                GlobalZIndex(BASE_STACKED_CRAD_LAYER + idx as i32),
+                StackedCardOffset(offset),
+            ));
+        });
+    }
+}
+
+fn card_offset_n(n: usize, max_cards: usize) -> Vec2 {
+    let rest = STACK_HEIGHT - HEIGHT;
+    let base_offset = rest / 2.0;
+    let offset = base_offset + rest / max_cards as f32 * n as f32;
+    vec2(0.0, offset)
 }
 
 fn cards_stack() -> impl Bundle {
@@ -223,7 +221,7 @@ fn cards_stack() -> impl Bundle {
         CardsStack { max: 3 },
         Node {
             width: Val::Px(WIDTH),
-            height: Val::Px(HEIGHT * 1.2),
+            height: Val::Px(STACK_HEIGHT),
 
             ..default()
         },
